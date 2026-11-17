@@ -178,18 +178,28 @@ function createLandscape(){
     dummy.position.set(x,groundY+terrainHeight(lx,lz)+span*.004,z);dummy.scale.set(sc,sc*.48,sc*.8);dummy.rotation.set(Math.random(),Math.random()*6,Math.random());dummy.updateMatrix();pebbles.setMatrixAt(i,dummy.matrix);
   }
   landscape.add(boulders,pebbles);
-  // Olive trees grow in small groves on the slopes, with trunks planted at the terrain surface.
+  // Olive trees grow in groves. Trunks stay world-vertical, penetrate the soil,
+  // and overlap the lower canopy bulb so there is no visible gap at the crown.
   const treePositions=[];
-  const groves=[[-1.22,-.72],[-1.35,.05],[-1.18,.78],[1.32,-.72],[1.36,.16],[1.26,.88],[-.72,1.38],[.62,1.42]];
+  let treeSeed=918273;
+  const rand=()=>{treeSeed=(treeSeed*1664525+1013904223)>>>0;return treeSeed/4294967296;};
+  const groves=[[-1.30,-.78],[-1.42,.02],[-1.28,.82],[1.48,-.78],[1.48,.20],[1.42,1.02],[-.72,1.48],[.68,1.52]];
+  const riverDistance=(x,z)=>{
+    let best=Infinity;
+    for(let k=0;k<=80;k++){const p=riverCurve.getPoint(k/80);best=Math.min(best,Math.hypot(x-p.x,z-p.z));}
+    return best;
+  };
   groves.forEach(([gx,gz],g)=>{
     const count=g%3===0?7:5;
     for(let j=0;j<count;j++){
-      const angle=(j/count)*Math.PI*2+g*.61,radius=span*(.12+Math.random()*.13);
-      const x=center.x+span*gx+Math.cos(angle)*radius+(Math.random()-.5)*span*.045;
-      const z=center.z+span*gz+Math.sin(angle)*radius+(Math.random()-.5)*span*.045;
+      const angle=(j/count)*Math.PI*2+g*.61,radius=span*(.10+rand()*.13);
+      const x=center.x+span*gx+Math.cos(angle)*radius+(rand()-.5)*span*.035;
+      const z=center.z+span*gz+Math.sin(angle)*radius+(rand()-.5)*span*.035;
       const dx=x-center.x,dz=z-center.z;
       if(Math.abs(dx)<span*.66&&Math.abs(dz)<span*.56)continue;
-      treePositions.push({x,z,scale:.78+Math.random()*.5,rot:Math.random()*Math.PI*2});
+      // Keep roots on the bank, not in the water channel or on top of boulders.
+      if(riverDistance(x,z)<span*.115)continue;
+      treePositions.push({x,z,scale:.82+rand()*.42,rot:rand()*Math.PI*2});
     }
   });
   const trunkGeo=new THREE.CylinderGeometry(span*.009,span*.014,span*.17,7,1);
@@ -204,10 +214,17 @@ function createLandscape(){
   treeCanopies=leafMat;
   const leaves=new THREE.InstancedMesh(leafGeo,leafMat,treePositions.length*2);
   treePositions.forEach((t,i)=>{
-    const lx=t.x-center.x,lz=t.z-center.z,baseY=groundY+terrainHeight(lx,lz),trunkHeight=span*.17*t.scale;
-    dummy.position.set(t.x,baseY+trunkHeight*.5,t.z);dummy.scale.set(t.scale,t.scale,t.scale);dummy.rotation.y=t.rot;dummy.updateMatrix();trunks.setMatrixAt(i,dummy.matrix);
-    dummy.position.set(t.x,baseY+trunkHeight*.88,t.z);dummy.scale.set(t.scale*.78,t.scale*.7,t.scale*.78);dummy.updateMatrix();leaves.setMatrixAt(i*2,dummy.matrix);
-    dummy.position.set(t.x+Math.cos(t.rot)*span*.025*t.scale,baseY+trunkHeight*1.22,t.z+Math.sin(t.rot)*span*.025*t.scale);dummy.scale.set(t.scale*.62,t.scale*.58,t.scale*.62);dummy.updateMatrix();leaves.setMatrixAt(i*2+1,dummy.matrix);
+    const lx=t.x-center.x,lz=t.z-center.z,soilY=groundY+terrainHeight(lx,lz),trunkHeight=span*.17*t.scale;
+    const embed=span*.025;
+    // Cylinder geometry is centred: this places its bottom slightly below the soil surface.
+    dummy.position.set(t.x,soilY-embed+trunkHeight*.5,t.z);
+    dummy.scale.set(t.scale,t.scale,t.scale);dummy.rotation.set(0,t.rot,0);dummy.updateMatrix();trunks.setMatrixAt(i,dummy.matrix);
+    const lowerBulbRadius=span*.066*.78*t.scale;
+    // Lower bulb overlaps the top of the trunk; upper bulb overlaps the lower one.
+    dummy.position.set(t.x,soilY+trunkHeight-lowerBulbRadius*.28,t.z);
+    dummy.scale.set(t.scale*.78,t.scale*.7,t.scale*.78);dummy.rotation.set(0,t.rot,0);dummy.updateMatrix();leaves.setMatrixAt(i*2,dummy.matrix);
+    dummy.position.set(t.x+Math.cos(t.rot)*span*.018*t.scale,soilY+trunkHeight+lowerBulbRadius*.82,t.z+Math.sin(t.rot)*span*.018*t.scale);
+    dummy.scale.set(t.scale*.62,t.scale*.58,t.scale*.62);dummy.rotation.set(0,t.rot,0);dummy.updateMatrix();leaves.setMatrixAt(i*2+1,dummy.matrix);
   });
   trunks.instanceMatrix.needsUpdate=true;leaves.instanceMatrix.needsUpdate=true;boulders.instanceMatrix.needsUpdate=true;pebbles.instanceMatrix.needsUpdate=true;
   landscape.add(trunks,leaves);
