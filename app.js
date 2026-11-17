@@ -48,7 +48,7 @@ const controls=new OrbitControls(camera,renderer.domElement);
 controls.enableDamping=true; controls.dampingFactor=.07; controls.target.set(0,3,-8);
 controls.maxDistance=1500; controls.minDistance=.5; controls.maxPolarAngle=Math.PI*.49;
 let root=null,mixer=null,clips=[],clock=new THREE.Clock(),filmCamera=null;
-let cloudRoots=[],cloudMeshes=[];
+let cloudRoots=[],cloudMeshes=[],landscape=null,riverMaterial=null,treeCanopies=null;
 const loader=new GLTFLoader(); loader.setMeshoptDecoder(MeshoptDecoder);
 loader.load('assets/solomon_temple.glb',g=>{
   root=g.scene; scene.add(root);
@@ -76,7 +76,7 @@ loader.load('assets/solomon_temple.glb',g=>{
   }
   filmCamera=root.getObjectByName('Camera')||root.getObjectByName('Camera.001');
   $('stage').querySelector('.loading')?.remove();
-  fitScene(); setWeather(weatherKind);
+  fitScene(); createLandscape(); setWeather(weatherKind);
 },p=>{
   if(p.total){
     const el=$('stage').querySelector('.loading span');
@@ -93,6 +93,98 @@ function fitScene(){
   camera.position.copy(center).add(new THREE.Vector3(-max*.9,max*.85,max*1.1));
   camera.near=Math.max(.05,max/10000); camera.far=1000000;
   camera.updateProjectionMatrix(); sky.position.copy(center); controls.update(); applyEnvironment();
+}
+
+// A restrained Judean hill-country setting: broad ground, distant ridges,
+// a winding brook and clustered olive/cypress trees. All repeated props are instanced.
+function createLandscape(){
+  if(landscape||!root)return;
+  const bounds=new THREE.Box3().setFromObject(root),center=bounds.getCenter(new THREE.Vector3()),size=bounds.getSize(new THREE.Vector3());
+  const span=Math.max(size.x,size.z,48),extent=span*2.15,groundY=bounds.min.y-.28;
+  landscape=new THREE.Group();landscape.name='Temple landscape';scene.add(landscape);
+  const groundGeo=new THREE.PlaneGeometry(extent*2,extent*2,72,72);groundGeo.rotateX(-Math.PI/2);
+  const pos=groundGeo.attributes.position,colors=[];
+  const cLow=new THREE.Color('#59624a'),cHigh=new THREE.Color('#77745a');
+  for(let i=0;i<pos.count;i++){
+    const x=pos.getX(i),z=pos.getZ(i);
+    const d=Math.min(1,Math.sqrt(x*x+z*z)/(extent*1.1));
+    const undulation=(Math.sin(x*.035)*Math.cos(z*.027)*.42+Math.sin((x+z)*.018)*.3)*d;
+    pos.setY(i,undulation);
+    const col=cLow.clone().lerp(cHigh,THREE.MathUtils.clamp(.25+d*.55+undulation*.12,0,1));
+    colors.push(col.r,col.g,col.b);
+  }
+  groundGeo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));groundGeo.computeVertexNormals();
+  const ground=new THREE.Mesh(groundGeo,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1,metalness:0}));
+  ground.position.set(center.x,groundY,center.z);ground.receiveShadow=false;landscape.add(ground);
+  const ridgeMat=new THREE.MeshStandardMaterial({color:0x777363,roughness:1,flatShading:true});
+  const ridgeGreen=new THREE.MeshStandardMaterial({color:0x68735b,roughness:1,flatShading:true});
+  const ridgeSpecs=[[-1.42,-1.05,.52,.42],[-.92,-1.55,.42,.32],[-.25,-1.72,.58,.36],[.48,-1.62,.48,.34],[1.2,-1.28,.58,.43],[1.55,-.45,.46,.36],[-1.58,.28,.5,.4],[-1.25,1.15,.56,.42],[.05,1.72,.6,.4],[1.1,1.4,.5,.38]];
+  ridgeSpecs.forEach((v,i)=>{
+    const r=span*v[2],h=span*v[3];
+    const geo=new THREE.ConeGeometry(r,h,7,2);const mesh=new THREE.Mesh(geo,i%3===0?ridgeMat:ridgeGreen);
+    mesh.position.set(center.x+span*v[0],groundY+h*.5,center.z+span*v[1]);mesh.rotation.y=i*.73;landscape.add(mesh);
+    const shoulder=new THREE.Mesh(new THREE.IcosahedronGeometry(r*.7,1),ridgeGreen);
+    shoulder.position.set(mesh.position.x+(i%2?1:-1)*r*.58,groundY+h*.16,mesh.position.z+r*.2);shoulder.scale.set(1,.5,1.1);landscape.add(shoulder);
+  });
+  // One meandering stream along the eastern slope, with animated surface highlights.
+  const riverPoints=[
+    new THREE.Vector3(center.x+span*1.22,groundY+.08,center.z+span*.95),
+    new THREE.Vector3(center.x+span*.96,groundY+.12,center.z+span*.62),
+    new THREE.Vector3(center.x+span*1.12,groundY+.1,center.z+span*.24),
+    new THREE.Vector3(center.x+span*.91,groundY+.12,center.z-span*.15),
+    new THREE.Vector3(center.x+span*1.18,groundY+.09,center.z-span*.52),
+    new THREE.Vector3(center.x+span*.96,groundY+.12,center.z-span*.96)
+  ];
+  const riverCurve=new THREE.CatmullRomCurve3(riverPoints,false,'centripetal');
+  const riverGeo=new THREE.TubeGeometry(riverCurve,180,Math.max(1.1,span*.027),7,false);
+  riverMaterial=new THREE.MeshStandardMaterial({color:0x3d8290,roughness:.2,metalness:.16,transparent:true,opacity:.88});
+  riverMaterial.onBeforeCompile=shader=>{
+    shader.uniforms.uFlowTime={value:0};
+    shader.vertexShader=shader.vertexShader.replace('#include <common>',`#include <common>\nuniform float uFlowTime; varying vec3 vBrookWorld;` );
+    shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>',`#include <begin_vertex>\n vBrookWorld=(modelMatrix*vec4(transformed,1.0)).xyz; transformed.y += sin(position.x*1.8+uFlowTime*2.2)*0.035 + cos(position.z*2.4-uFlowTime*1.5)*0.025;` );
+    shader.fragmentShader=shader.fragmentShader.replace('#include <common>',`#include <common>\nuniform float uFlowTime; varying vec3 vBrookWorld;` );
+    shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>',`#include <color_fragment>\n float glint=pow(max(0.0,sin(vBrookWorld.x*1.7+vBrookWorld.z*2.1-uFlowTime*3.0)),18.0)*0.22; diffuseColor.rgb += vec3(0.38,0.58,0.62)*glint;` );
+    riverMaterial.userData.shader=shader;
+  };
+  const river=new THREE.Mesh(riverGeo,riverMaterial);river.name='Flowing brook';landscape.add(river);
+  // Pebble banks as one low-poly instanced draw call.
+  const pebbleGeo=new THREE.IcosahedronGeometry(span*.009,0),pebbleMat=new THREE.MeshStandardMaterial({color:0xaaa18a,roughness:.94,flatShading:true});
+  const pebbles=new THREE.InstancedMesh(pebbleGeo,pebbleMat,72),dummy=new THREE.Object3D();
+  for(let i=0;i<72;i++){
+    const t=(i%36)/35,pt=riverCurve.getPoint(t),side=i<36?-1:1,offset=span*(.035+Math.random()*.025);
+    dummy.position.set(pt.x+side*offset,groundY+.18+Math.random()*.12,pt.z+(Math.random()-.5)*span*.025);
+    const sc=.45+Math.random()*1.2;dummy.scale.set(sc,sc*.55,sc*.8);dummy.rotation.set(Math.random(),Math.random()*6,Math.random());dummy.updateMatrix();pebbles.setMatrixAt(i,dummy.matrix);
+  }
+  landscape.add(pebbles);
+  // Olive-like trees: shared low-poly trunk and layered canopies, instanced for web performance.
+  const treePositions=[];
+  for(let i=0;i<46;i++){
+    const side=i%2?1:-1,along=(Math.floor(i/2)/23-.5)*1.65;
+    const x=center.x+side*span*(.72+Math.random()*.48);
+    const z=center.z+along*span+(Math.random()-.5)*span*.18;
+    if(Math.abs(x-center.x)<span*.62&&Math.abs(z-center.z)<span*.58)continue;
+    treePositions.push({x,z,scale:.72+Math.random()*.78,rot:Math.random()*Math.PI*2});
+  }
+  const trunkGeo=new THREE.CylinderGeometry(span*.009,span*.014,span*.14,6,1);
+  const trunkMat=new THREE.MeshStandardMaterial({color:0x66503a,roughness:1,flatShading:true});
+  const trunks=new THREE.InstancedMesh(trunkGeo,trunkMat,treePositions.length);
+  const leafGeo=new THREE.IcosahedronGeometry(span*.075,1);
+  const leafMat=new THREE.MeshStandardMaterial({color:0x536b48,roughness:1,flatShading:true});
+  leafMat.onBeforeCompile=shader=>{
+    shader.uniforms.uBreeze={value:0};
+    shader.vertexShader=shader.vertexShader.replace('#include <common>',`#include <common>\nuniform float uBreeze;` );
+    shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>',`#include <begin_vertex>\n transformed.x += sin(instanceMatrix[3].x*0.12+uBreeze*1.4+position.y*2.0)*0.035*position.y;` );
+    leafMat.userData.shader=shader;
+  };
+  treeCanopies=leafMat;
+  const leaves=new THREE.InstancedMesh(leafGeo,leafMat,treePositions.length*2);
+  treePositions.forEach((t,i)=>{
+    dummy.position.set(t.x,groundY+span*.075*t.scale, t.z);dummy.scale.set(t.scale*.72,t.scale*.65,t.scale*.72);dummy.rotation.y=t.rot;dummy.updateMatrix();trunks.setMatrixAt(i,dummy.matrix);
+    dummy.position.y+=span*.095*t.scale;dummy.scale.set(t.scale,t.scale*.78,t.scale);dummy.updateMatrix();leaves.setMatrixAt(i*2,dummy.matrix);
+    dummy.position.y+=span*.06*t.scale;dummy.scale.set(t.scale*.68,t.scale*.62,t.scale*.68);dummy.updateMatrix();leaves.setMatrixAt(i*2+1,dummy.matrix);
+  });
+  landscape.add(trunks,leaves);
+  landscape.userData.center=center;landscape.userData.span=span;landscape.userData.groundY=groundY;
 }
 const presets={Aerial:[[-75,72,95],[0,3,-8]],Porch:[[0,10,25],[0,6,0]],Sanctuary:[[0,7,8],[0,4,-13]],'Holy of Holies':[[0,6,-15],[0,4,-24]],Courts:[[-32,18,16],[0,3,-8]]};
 const weatherGroup=new THREE.Group(); scene.add(weatherGroup); let weatherKind='summer',weatherObj=null,weatherGeo=null,weatherPositions=null,weatherVelocity=null;
@@ -154,6 +246,7 @@ function setWeather(kind){
   applyEnvironment();
   updateTimeUI();
   cloudRoots.forEach(o=>o.scale.setScalar(profile.cloudScale));
+  if(treeCanopies){const colors={summer:0x536b48,spring:0x668052,autumn:0x9a7042,winter:0x66705d,rain:0x425c4d};treeCanopies.color.setHex(colors[kind]||colors.summer);}
   cloudMeshes.forEach(o=>{
     const mats=Array.isArray(o.material)?o.material:[o.material];
     mats.forEach(m=>{if(m&&m.color)m.color.setHex(profile.cloud);if(m&&'roughness' in m)m.roughness=.96;});
@@ -191,7 +284,7 @@ $('timeSlider').addEventListener('input',e=>{timeTarget=Number(e.target.value);t
 $('timePlay').addEventListener('click',()=>{timePlaying=!timePlaying;updateTimeUI();});
 document.querySelectorAll('[data-time]').forEach(b=>b.addEventListener('click',()=>{timeTarget=Number(b.dataset.time);timePlaying=false;updateTimeUI();}));
 setWeather('summer');updateTimeUI();
-function updateWeather(dt){if(!weatherObj)return;const p=weatherGeo.attributes.position.array;const rain=weatherKind==='rain';const n=weatherVelocity.length/3;for(let i=0;i<n;i++){let k=i*(rain?6:3);p[k]+=weatherVelocity[i*3]*dt;p[k+1]+=weatherVelocity[i*3+1]*dt;p[k+2]+=weatherVelocity[i*3+2]*dt;if(rain){p[k+3]=p[k]-.035;p[k+4]=p[k+1]+.55;p[k+5]=p[k+2]-.035;}if(p[k+1]<.2){p[k]=(Math.random()-.5)*95;p[k+1]=35+Math.random()*10;p[k+2]=(Math.random()-.5)*110;if(rain){p[k+3]=p[k]-.035;p[k+4]=p[k+1]+.55;p[k+5]=p[k+2]-.035;}}}weatherGeo.attributes.position.needsUpdate=true;}
+function updateWeather(dt){if(riverMaterial?.userData.shader)riverMaterial.userData.shader.uniforms.uFlowTime.value+=dt;if(treeCanopies?.userData.shader)treeCanopies.userData.shader.uniforms.uBreeze.value+=dt;if(!weatherObj)return;const p=weatherGeo.attributes.position.array;const rain=weatherKind==='rain';const n=weatherVelocity.length/3;for(let i=0;i<n;i++){let k=i*(rain?6:3);p[k]+=weatherVelocity[i*3]*dt;p[k+1]+=weatherVelocity[i*3+1]*dt;p[k+2]+=weatherVelocity[i*3+2]*dt;if(rain){p[k+3]=p[k]-.035;p[k+4]=p[k+1]+.55;p[k+5]=p[k+2]-.035;}if(p[k+1]<.2){p[k]=(Math.random()-.5)*95;p[k+1]=35+Math.random()*10;p[k+2]=(Math.random()-.5)*110;if(rain){p[k+3]=p[k]-.035;p[k+4]=p[k+1]+.55;p[k+5]=p[k+2]-.035;}}}weatherGeo.attributes.position.needsUpdate=true;}
 
 document.querySelectorAll('[data-camera]').forEach(b=>b.addEventListener('click',()=>{const [p,t]=presets[b.dataset.camera];camera.position.set(...p);controls.target.set(...t);controls.update();document.querySelectorAll('[data-camera]').forEach(x=>x.classList.toggle('active',x===b));$('viewTitle').textContent=b.dataset.camera+' viewpoint';$('viewHint').textContent=b.dataset.camera==='Sanctuary'?'Inside the nave · Cedar, gold and lampstands':b.dataset.camera==='Holy of Holies'?'The Ark and cherubim · 1 Kings 8:6':'Drag to explore · Scroll to zoom';}));
 $('resetView').onclick=()=>{fitScene();document.querySelectorAll('[data-camera]').forEach(x=>x.classList.toggle('active',x.dataset.camera==='Aerial'));};$('fullscreen').onclick=()=>{$('stage').requestFullscreen?.();};
