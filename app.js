@@ -2,45 +2,188 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { Sky } from 'three/addons/objects/Sky.js';
 
 const $ = id => document.getElementById(id);
-const scene = new THREE.Scene(); scene.background = new THREE.Color('#17221b'); scene.fog = new THREE.FogExp2('#17221b', .0012);
-const camera = new THREE.PerspectiveCamera(42, 1, .1, 3000); camera.position.set(-75,72,95);
-const renderer = new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'}); renderer.setPixelRatio(Math.min(devicePixelRatio,1.75)); renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=.78; $('stage').appendChild(renderer.domElement);
-// Restrained ambient fill. The focused Ark beam and local spill are authored in Blender.
-const hemi=new THREE.HemisphereLight(0xc5cbd0,0x30271d,.15); scene.add(hemi); const sun=new THREE.DirectionalLight(0xd8d1c1,.12); sun.position.set(-24,55,32); scene.add(sun);
-const controls=new OrbitControls(camera,renderer.domElement); controls.enableDamping=true; controls.dampingFactor=.07; controls.target.set(0,3,-8); controls.maxDistance=1500; controls.minDistance=.5; controls.maxPolarAngle=Math.PI*.49;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#111923');
+scene.fog = new THREE.FogExp2('#89999a', .00042);
+const camera = new THREE.PerspectiveCamera(42, 1, .1, 1000000);
+camera.position.set(-75,72,95);
+const renderer = new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.6));
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=.82;
+$('stage').appendChild(renderer.domElement);
+
+const sky = new Sky();
+sky.scale.setScalar(450000);
+sky.material.depthWrite = false;
+scene.add(sky);
+const skyUniforms = sky.material.uniforms;
+skyUniforms.turbidity.value = 2.8;
+skyUniforms.rayleigh.value = 1.8;
+skyUniforms.mieCoefficient.value = .006;
+skyUniforms.mieDirectionalG.value = .82;
+
+const hemi = new THREE.HemisphereLight(0xdce3e6, 0x33281f, .12);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffe5c0, 0);
+sun.position.set(0,100,0); sun.target.position.set(0,0,0); sun.castShadow = false;
+scene.add(sun, sun.target);
+const moon = new THREE.DirectionalLight(0xa8bddf, 0);
+moon.position.set(0,100,0); moon.target.position.set(0,0,0); moon.castShadow = false;
+scene.add(moon, moon.target);
+// A narrow, quiet Shekinah shaft stays local to the Ark instead of washing the nave.
+const arkGlow = new THREE.PointLight(0xffd69a, .12, 13, 2);
+arkGlow.position.set(0, 8.1, -26.1);
+scene.add(arkGlow);
+const arkBeamMaterial = new THREE.MeshBasicMaterial({color:0xf4dfb2,transparent:true,opacity:.035,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide,toneMapped:false});
+const arkBeam = new THREE.Mesh(new THREE.CylinderGeometry(1.25,.12,8.8,16,1,true),arkBeamMaterial);
+arkBeam.position.set(0,12.2,-26.1);
+scene.add(arkBeam);
+
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true; controls.dampingFactor=.07; controls.target.set(0,3,-8);
+controls.maxDistance=1500; controls.minDistance=.5; controls.maxPolarAngle=Math.PI*.49;
 let root=null,mixer=null,clips=[],clock=new THREE.Clock(),filmCamera=null;
+let cloudRoots=[],cloudMeshes=[];
 const loader=new GLTFLoader(); loader.setMeshoptDecoder(MeshoptDecoder);
-loader.load('assets/solomon_temple.glb',g=>{root=g.scene;scene.add(root); clips=g.animations||[]; if(clips.length){mixer=new THREE.AnimationMixer(root); clips.forEach(c=>mixer.clipAction(c).play());} filmCamera=root.getObjectByName('Camera')||root.getObjectByName('Camera.001'); $('stage').querySelector('.loading')?.remove(); fitScene();},p=>{if(p.total){const el=$('stage').querySelector('.loading span');if(el)el.textContent=`Loading sanctuary · ${Math.round(p.loaded/p.total*100)}%`;}},e=>{$('stage').querySelector('.loading span').textContent='Could not load the Temple model. Check the local server and asset path.';console.error(e);});
-function fitScene(){if(!root)return;const b=new THREE.Box3().setFromObject(root),size=b.getSize(new THREE.Vector3()),center=b.getCenter(new THREE.Vector3()),max=Math.max(size.x,size.y,size.z);controls.target.copy(center);camera.position.copy(center).add(new THREE.Vector3(-max*.9,max*.85,max*1.1));camera.near=Math.max(.05,max/10000);camera.far=max*20;camera.updateProjectionMatrix();controls.update();}
+loader.load('assets/solomon_temple.glb',g=>{
+  root=g.scene; scene.add(root);
+  root.traverse(o=>{
+    if(o.isLight){o.intensity=0;o.visible=false;}
+    if(o.name.startsWith('Cloud drift')) cloudRoots.push(o);
+    if(o.isMesh && o.name.startsWith('Cloud ')) cloudMeshes.push(o);
+  });
+  clips=g.animations||[];
+  if(clips.length){
+    mixer=new THREE.AnimationMixer(root);
+    clips.forEach(c=>{
+      if(/Camera/.test(c.name)) return;
+      if(/Worshipper|Attendant/.test(c.name)){
+        c.tracks.forEach(track=>{
+          if(!track.name.endsWith('.position') || track.values.length<3) return;
+          const v=track.values, base=[v[0],v[1],v[2]];
+          for(let i=0;i<v.length;i+=3) for(let axis=0;axis<3;axis++)
+            v[i+axis]=base[axis]+(v[i+axis]-base[axis])*2.6;
+        });
+      }
+      const action=mixer.clipAction(c);
+      action.setLoop(THREE.LoopRepeat, Infinity); action.play();
+    });
+  }
+  filmCamera=root.getObjectByName('Camera')||root.getObjectByName('Camera.001');
+  $('stage').querySelector('.loading')?.remove();
+  fitScene(); setWeather(weatherKind);
+},p=>{
+  if(p.total){
+    const el=$('stage').querySelector('.loading span');
+    if(el)el.textContent='Loading sanctuary · '+Math.round(p.loaded/p.total*100)+'%';
+  }
+},e=>{
+  $('stage').querySelector('.loading span').textContent='Could not load the Temple model. Check the local server and asset path.';
+  console.error(e);
+});
+function fitScene(){
+  if(!root)return;
+  const b=new THREE.Box3().setFromObject(root),size=b.getSize(new THREE.Vector3()),center=b.getCenter(new THREE.Vector3()),max=Math.max(size.x,size.y,size.z);
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(-max*.9,max*.85,max*1.1));
+  camera.near=Math.max(.05,max/10000); camera.far=1000000;
+  camera.updateProjectionMatrix(); sky.position.copy(center); controls.update(); applyEnvironment();
+}
 const presets={Aerial:[[-75,72,95],[0,3,-8]],Porch:[[0,10,25],[0,6,0]],Sanctuary:[[0,7,8],[0,4,-13]],'Holy of Holies':[[0,6,-15],[0,4,-24]],Courts:[[-32,18,16],[0,3,-8]]};
 const weatherGroup=new THREE.Group(); scene.add(weatherGroup); let weatherKind='summer',weatherObj=null,weatherGeo=null,weatherPositions=null,weatherVelocity=null;
-const moods={summer:{sky:'#17221b',hemi:.15,sun:.12,cloud:0x778087},spring:{sky:'#26332b',hemi:.19,sun:.15,cloud:0xa9b6b0},autumn:{sky:'#2b261e',hemi:.14,sun:.10,cloud:0x8b7964},winter:{sky:'#202b35',hemi:.17,sun:.09,cloud:0x9caab5},rain:{sky:'#171f28',hemi:.11,sun:.05,cloud:0x58636d}};
-const timeFrames=[
- {t:0,sky:'#080d17',fog:'#0a1019',hemi:.035,sun:.012,sunColor:'#8194b8',elev:8},
- {t:300,sky:'#151c2b',fog:'#151c2b',hemi:.055,sun:.018,sunColor:'#b5a0a0',elev:8},
- {t:390,sky:'#b47755',fog:'#705344',hemi:.105,sun:.075,sunColor:'#f2b77f',elev:18},
- {t:510,sky:'#687b78',fog:'#53665f',hemi:.15,sun:.12,sunColor:'#e8d4ad',elev:42},
- {t:720,sky:'#71868a',fog:'#62736c',hemi:.19,sun:.17,sunColor:'#fff0d1',elev:72},
- {t:960,sky:'#7c7968',fog:'#655e50',hemi:.16,sun:.14,sunColor:'#f4d2a0',elev:43},
- {t:1080,sky:'#b66e4b',fog:'#674538',hemi:.105,sun:.075,sunColor:'#f3a56d',elev:18},
- {t:1170,sky:'#30283a',fog:'#282331',hemi:.065,sun:.025,sunColor:'#b18aa1',elev:8},
- {t:1439,sky:'#080d17',fog:'#0a1019',hemi:.035,sun:.012,sunColor:'#8194b8',elev:8}
-];
-let timeMinutes=600,timeTarget=600,timePlaying=false,timeBlend=0;
-function timeName(t){if(t<300||t>=1260)return 'NIGHT';if(t<420)return 'DAWN';if(t<660)return 'MORNING';if(t<960)return 'DAY';if(t<1110)return 'GOLDEN HOUR';if(t<1260)return 'DUSK';return 'NIGHT';}
-function sampleTime(t){let a=timeFrames[0],b=timeFrames[timeFrames.length-1];for(let i=0;i<timeFrames.length-1;i++){if(t>=timeFrames[i].t&&t<=timeFrames[i+1].t){a=timeFrames[i];b=timeFrames[i+1];break;}}const f=THREE.MathUtils.clamp((t-a.t)/(b.t-a.t||1),0,1);return {sky:new THREE.Color(a.sky).lerp(new THREE.Color(b.sky),f),fog:new THREE.Color(a.fog).lerp(new THREE.Color(b.fog),f),sunColor:new THREE.Color(a.sunColor).lerp(new THREE.Color(b.sunColor),f),hemi:THREE.MathUtils.lerp(a.hemi,b.hemi,f),sun:THREE.MathUtils.lerp(a.sun,b.sun,f),elev:THREE.MathUtils.lerp(a.elev,b.elev,f)};}
-function applyEnvironment(){
- const m=moods[weatherKind]||moods.summer,tm=sampleTime(timeMinutes),weatherSky=new THREE.Color(m.sky);
- const sky=tm.sky.clone().lerp(weatherSky,weatherKind==='summer'?.08:.27);
- scene.background.copy(sky);scene.fog.color.copy(tm.fog.clone().lerp(weatherSky,weatherKind==='summer'?.08:.35));
- scene.fog.density=(weatherKind==='rain'?.0024:weatherKind==='winter'?.0017:.00105)*(timeName(timeMinutes)==='NIGHT'?1.2:1);
- hemi.intensity=tm.hemi*(m.hemi/.15);sun.intensity=tm.sun*(m.sun/.12);sun.color.copy(tm.sunColor);
- const angle=(timeMinutes/1440)*Math.PI*2-Math.PI/2;
- sun.position.set(Math.cos(angle)*70,Math.max(8,tm.elev),Math.sin(angle)*55);
+const weatherProfiles={
+  summer:{turbidity:2.4,rayleigh:1.8,mie:.004,sun:1,ambient:1,cloud:0xd8dedb,cloudScale:.82,fog:0x87999a,fogDensity:.00034,sunrise:5.5,sunset:19.5},
+  spring:{turbidity:3.2,rayleigh:1.75,mie:.007,sun:.92,ambient:.98,cloud:0xd5dedc,cloudScale:.96,fog:0x9aa8a1,fogDensity:.00038,sunrise:6,sunset:18.3},
+  autumn:{turbidity:4.6,rayleigh:1.5,mie:.012,sun:.82,ambient:.9,cloud:0xb7a18a,cloudScale:1.12,fog:0x8c796b,fogDensity:.00048,sunrise:6.5,sunset:17.6},
+  winter:{turbidity:5.8,rayleigh:1.25,mie:.016,sun:.68,ambient:.82,cloud:0xb8c4cc,cloudScale:1.28,fog:0x8293a1,fogDensity:.00055,sunrise:7,sunset:17},
+  rain:{turbidity:9.5,rayleigh:.85,mie:.038,sun:.34,ambient:.62,cloud:0x596875,cloudScale:1.48,fog:0x52616d,fogDensity:.00105,sunrise:6,sunset:18}
+};
+let timeMinutes=600,timeTarget=600,timePlaying=false;
+function timeName(t){
+  const p=weatherProfiles[weatherKind]||weatherProfiles.summer,h=t/60;
+  if(h<p.sunrise-.7||h>p.sunset+.7)return 'NIGHT';
+  if(h<p.sunrise+1)return 'DAWN';
+  if(h<p.sunrise+3.5)return 'MORNING';
+  if(h<p.sunset-3)return 'DAY';
+  if(h<p.sunset-1)return 'GOLDEN HOUR';
+  return 'DUSK';
 }
-function setWeather(kind){weatherKind=kind;const m=moods[kind]||moods.summer;applyEnvironment();if(root)root.traverse(o=>{if(o.isMesh&&o.name.startsWith('Cloud ')){const mats=Array.isArray(o.material)?o.material:[o.material];mats.forEach(x=>{if(x&&x.color)x.color.setHex(m.cloud);});}});if(weatherObj){weatherGroup.remove(weatherObj);weatherObj.geometry.dispose();weatherObj.material.dispose();weatherObj=null;}const count=kind==='rain'?520:kind==='winter'?380:kind==='autumn'?140:kind==='spring'?110:0;if(!count)return;const rain=kind==='rain';weatherGeo=new THREE.BufferGeometry();weatherPositions=new Float32Array(count*(rain?6:3));weatherVelocity=new Float32Array(count*3);for(let i=0;i<count;i++){const x=(Math.random()-.5)*95,y=Math.random()*38+3,z=(Math.random()-.5)*110;weatherPositions[i*(rain?6:3)]=x;weatherPositions[i*(rain?6:3)+1]=y;weatherPositions[i*(rain?6:3)+2]=z;if(rain){weatherPositions[i*6+3]=x-.035;weatherPositions[i*6+4]=y+.55;weatherPositions[i*6+5]=z-.035;}weatherVelocity[i*3]=(Math.random()-.5)*(rain?1.8:.35);weatherVelocity[i*3+1]=rain?-7:kind==='winter'?-1.0:kind==='autumn'?.4:-.28;weatherVelocity[i*3+2]=rain?-1.2:(Math.random()-.5)*.3;}weatherGeo.setAttribute('position',new THREE.BufferAttribute(weatherPositions,3));const isSnow=kind==='winter';const material=new THREE.PointsMaterial({color:rain?0xb8c7d5:isSnow?0xe7edf2:kind==='autumn'?0xc98739:0xe8a7ad,size:rain?.065:isSnow?.12:.16,transparent:true,opacity:rain?.42:.82,depthWrite:false,sizeAttenuation:true});weatherObj=rain?new THREE.LineSegments(weatherGeo,new THREE.LineBasicMaterial({color:0xb8c7d5,transparent:true,opacity:.36})):new THREE.Points(weatherGeo,material);weatherGroup.add(weatherObj);}
+function solarPosition(t){
+  const p=weatherProfiles[weatherKind]||weatherProfiles.summer,hours=t/60;
+  const phase=((hours-p.sunrise)/(p.sunset-p.sunrise))*Math.PI;
+  const elevation=60*Math.sin(phase),azimuth=-Math.PI/2+phase;
+  const e=THREE.MathUtils.degToRad(elevation),horizontal=Math.cos(e);
+  const direction=new THREE.Vector3(Math.sin(azimuth)*horizontal,Math.sin(e),Math.cos(azimuth)*horizontal).normalize();
+  return {elevation,direction};
+}
+function applyEnvironment(){
+  const profile=weatherProfiles[weatherKind]||weatherProfiles.summer;
+  const solar=solarPosition(timeMinutes);
+  const daylight=THREE.MathUtils.smoothstep(solar.elevation,-8,12);
+  const warm=THREE.MathUtils.smoothstep(solar.elevation,2,48);
+  const sunColor=new THREE.Color(0xffa36b).lerp(new THREE.Color(0xfff0d5),warm);
+  skyUniforms.turbidity.value=profile.turbidity;
+  skyUniforms.rayleigh.value=profile.rayleigh;
+  skyUniforms.mieCoefficient.value=profile.mie;
+  skyUniforms.mieDirectionalG.value=.82;
+  skyUniforms.sunPosition.value.copy(solar.direction);
+  sky.visible=solar.elevation>-9;
+  scene.background=sky.visible?null:new THREE.Color('#111a27');
+  scene.fog.color.setHex(profile.fog);
+  scene.fog.density=profile.fogDensity*(daylight<.05?1.18:1);
+  hemi.intensity=THREE.MathUtils.lerp(.055,.43,daylight)*profile.ambient;
+  hemi.color.set(daylight>.5?0xdce5e7:0x9aabc2);
+  hemi.groundColor.set(weatherKind==='rain'?0x29333a:0x33281f);
+  sun.position.copy(controls.target).addScaledVector(solar.direction,320);
+  sun.target.position.copy(controls.target); sun.color.copy(sunColor);
+  sun.intensity=1.45*daylight*profile.sun;
+  const moonDirection=solar.direction.clone().negate();
+  moon.position.copy(controls.target).addScaledVector(moonDirection,280);
+  moon.target.position.copy(controls.target); moon.intensity=(1-daylight)*.11;
+  arkGlow.intensity=.075+(1-daylight)*.07;
+  arkBeamMaterial.opacity=.028+(1-daylight)*.016;
+}
+function setWeather(kind){
+  weatherKind=kind;
+  const profile=weatherProfiles[kind]||weatherProfiles.summer;
+  applyEnvironment();
+  updateTimeUI();
+  cloudRoots.forEach(o=>o.scale.setScalar(profile.cloudScale));
+  cloudMeshes.forEach(o=>{
+    const mats=Array.isArray(o.material)?o.material:[o.material];
+    mats.forEach(m=>{if(m&&m.color)m.color.setHex(profile.cloud);if(m&&'roughness' in m)m.roughness=.96;});
+  });
+  if(weatherObj){
+    weatherGroup.remove(weatherObj); weatherObj.geometry.dispose();
+    if(Array.isArray(weatherObj.material))weatherObj.material.forEach(m=>m.dispose());
+    else weatherObj.material.dispose();
+    weatherObj=null;
+  }
+  const count=kind==='rain'?520:kind==='winter'?380:kind==='autumn'?140:kind==='spring'?110:0;
+  if(!count)return;
+  const rain=kind==='rain';
+  weatherGeo=new THREE.BufferGeometry();
+  weatherPositions=new Float32Array(count*(rain?6:3));
+  weatherVelocity=new Float32Array(count*3);
+  for(let i=0;i<count;i++){
+    const x=(Math.random()-.5)*95,y=Math.random()*38+3,z=(Math.random()-.5)*110,k=i*(rain?6:3);
+    weatherPositions[k]=x;weatherPositions[k+1]=y;weatherPositions[k+2]=z;
+    if(rain){weatherPositions[i*6+3]=x-.035;weatherPositions[i*6+4]=y+.55;weatherPositions[i*6+5]=z-.035;}
+    weatherVelocity[i*3]=(Math.random()-.5)*(rain?1.8:.35);
+    weatherVelocity[i*3+1]=rain?-7:kind==='winter'?-1.0:kind==='autumn'?.4:-.28;
+    weatherVelocity[i*3+2]=rain?-1.2:(Math.random()-.5)*.3;
+  }
+  weatherGeo.setAttribute('position',new THREE.BufferAttribute(weatherPositions,3));
+  const isSnow=kind==='winter';
+  const material=new THREE.PointsMaterial({color:rain?0xb8c7d5:isSnow?0xe7edf2:kind==='autumn'?0xc98739:0xe8a7ad,size:rain?.065:isSnow?.12:.16,transparent:true,opacity:rain?.42:.82,depthWrite:false,sizeAttenuation:true});
+  weatherObj=rain?new THREE.LineSegments(weatherGeo,new THREE.LineBasicMaterial({color:0xb8c7d5,transparent:true,opacity:.36})):new THREE.Points(weatherGeo,material);
+  weatherGroup.add(weatherObj);
+}
 function formatTime(t){const h=Math.floor(t/60),m=t%60;return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');}
 function updateTimeUI(){ $('timeSlider').value=String(Math.round(timeTarget/5)*5);$('timeLabel').textContent=formatTime(timeTarget)+' · '+timeName(timeTarget);$('timePlay').textContent=timePlaying?'Ⅱ':'▶';$('timePlay').setAttribute('aria-label',timePlaying?'Pause time cycle':'Start time cycle');document.querySelectorAll('[data-time]').forEach(b=>b.classList.toggle('active',Number(b.dataset.time)===Math.round(timeTarget/5)*5));}
 $('weatherSelect').addEventListener('change',e=>setWeather(e.target.value));
